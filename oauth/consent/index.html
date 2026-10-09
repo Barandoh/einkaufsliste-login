@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Einkaufsliste verbinden</title>
+  <style>
+    :root {
+      --bg: #f4f7f2; --karte: #ffffff; --text: #1b1f1a; --leise: #5b6559;
+      --gruen: #2e7d32; --gruen-text: #ffffff; --rand: #d5ddd2; --fehler: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111511; --karte: #1b211b; --text: #e3e8e0; --leise: #a3ad9f;
+        --gruen: #8fd694; --gruen-text: #0d3311; --rand: #3a443a; --fehler: #f2b8b5;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+      background: var(--bg); color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main {
+      width: 100%; max-width: 400px; background: var(--karte); border: 1px solid var(--rand);
+      border-radius: 16px; padding: 28px 24px;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 4px; }
+    p { margin: 0 0 16px; color: var(--leise); }
+    label { display: block; font-size: .9rem; margin: 12px 0 4px; }
+    input {
+      width: 100%; padding: 10px 12px; font: inherit; color: var(--text);
+      background: transparent; border: 1px solid var(--rand); border-radius: 8px;
+    }
+    button {
+      width: 100%; margin-top: 16px; padding: 12px; font: inherit; font-weight: 600;
+      border-radius: 999px; border: 1px solid var(--gruen); cursor: pointer;
+      background: var(--gruen); color: var(--gruen-text);
+    }
+    button.zweit { background: transparent; color: var(--gruen); margin-top: 8px; }
+    button:disabled { opacity: .6; cursor: default; }
+    ul { margin: 0 0 8px; padding-left: 20px; color: var(--leise); }
+    .fehler { color: var(--fehler); margin-top: 12px; }
+    .klein { font-size: .85rem; margin-top: 20px; text-align: center; }
+    .klein a { color: var(--gruen); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>🛒 Einkaufsliste</h1>
+
+    <section id="laden"><p>Einen Moment …</p></section>
+
+    <form id="login" hidden>
+      <p>Melde dich mit deinem Einkaufslisten-Konto an, um Claude den Zugriff zu erlauben.</p>
+      <label for="email">E-Mail</label>
+      <input id="email" type="email" autocomplete="email" required>
+      <label for="passwort">Passwort</label>
+      <input id="passwort" type="password" autocomplete="current-password" required>
+      <button type="submit">Anmelden</button>
+    </form>
+
+    <section id="zustimmung" hidden>
+      <p><strong id="client"></strong> möchte auf deine Einkaufsliste zugreifen:</p>
+      <ul>
+        <li>Artikel aufschreiben, abhaken und entfernen</li>
+        <li>Liste vorlesen</li>
+        <li>neue Artikel einem Laden zuordnen</li>
+      </ul>
+      <button id="erlauben" type="button">Erlauben</button>
+      <button id="ablehnen" type="button" class="zweit">Ablehnen</button>
+      <p class="klein">Angemeldet als <span id="wer"></span> · <a href="#" id="abmelden">anderes Konto</a></p>
+    </section>
+
+    <p id="fehler" class="fehler" hidden></p>
+  </main>
+
+  <script type="module">
+    import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/+esm'
+
+    // Öffentliche Client-Werte (Schutz der Daten über RLS)
+    const supa = createClient(
+      'https://wfnybbakgivksexrcakq.supabase.co',
+      'sb_publishable_jJxqtRt1if4LrEa_fsnzFQ_j4EWWXuZ',
+    )
+
+    const $ = (id) => document.getElementById(id)
+    const zeige = (id) => {
+      for (const s of ['laden', 'login', 'zustimmung']) $(s).hidden = s !== id
+    }
+    const fehler = (text) => {
+      $('fehler').textContent = text
+      $('fehler').hidden = !text
+    }
+
+    const authorizationId = new URLSearchParams(location.search).get('authorization_id')
+
+    async function weiter() {
+      fehler('')
+      if (!authorizationId) {
+        zeige('laden')
+        $('laden').innerHTML = '<p>Diese Seite wird beim Verbinden der Einkaufsliste mit Claude geöffnet.</p>'
+        return
+      }
+      const { data: { session } } = await supa.auth.getSession()
+      if (!session) {
+        zeige('login')
+        $('email').focus()
+        return
+      }
+      zeige('laden')
+      const { data, error } = await supa.auth.oauth.getAuthorizationDetails(authorizationId)
+      if (error) {
+        fehler('Die Anfrage ist ungültig oder abgelaufen. Bitte die Verbindung in Claude neu starten. (' + error.message + ')')
+        return
+      }
+      // Schon früher erlaubt → direkt zurück zu Claude
+      if (!('authorization_id' in data) && data.redirect_url) {
+        location.assign(data.redirect_url)
+        return
+      }
+      $('client').textContent = data.client?.name || 'Claude'
+      $('wer').textContent = session.user.email
+      zeige('zustimmung')
+    }
+
+    $('login').addEventListener('submit', async (ev) => {
+      ev.preventDefault()
+      const knopf = ev.submitter
+      knopf.disabled = true
+      fehler('')
+      const { error } = await supa.auth.signInWithPassword({
+        email: $('email').value.trim(),
+        password: $('passwort').value,
+      })
+      knopf.disabled = false
+      if (error) {
+        fehler(error.message.toLowerCase().includes('invalid login')
+          ? 'E-Mail oder Passwort falsch.'
+          : error.message)
+        return
+      }
+      weiter()
+    })
+
+    async function entscheiden(erlauben) {
+      $('erlauben').disabled = $('ablehnen').disabled = true
+      const fn = erlauben ? supa.auth.oauth.approveAuthorization : supa.auth.oauth.denyAuthorization
+      const { data, error } = await fn.call(supa.auth.oauth, authorizationId, { skipBrowserRedirect: true })
+      if (error) {
+        $('erlauben').disabled = $('ablehnen').disabled = false
+        fehler(error.message)
+        return
+      }
+      location.assign(data.redirect_url)
+    }
+    $('erlauben').addEventListener('click', () => entscheiden(true))
+    $('ablehnen').addEventListener('click', () => entscheiden(false))
+
+    $('abmelden').addEventListener('click', async (ev) => {
+      ev.preventDefault()
+      await supa.auth.signOut()
+      weiter()
+    })
+
+    weiter()
+  </script>
+</body>
+</html>
